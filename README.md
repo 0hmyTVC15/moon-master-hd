@@ -37,7 +37,7 @@ A fast, silly, 4-bit-style browser game loosely inspired by the â€œMoon Masterâ€
 ## Host
 - [Click this link for the most current build](https://htmlpreview.github.io/?https://github.com/0hmyTVC15/moon-master-hd/blob/56b5f483ad93e2909ac3f84eff5756ceacdf4477/builds/ver%201.0.x/moon-master-1.4.2.html)
 - Intructions located in bottom left hand corner.
-< All assets are generated via javascript, css and html. It is a self-contatined file.
+> All assets are generated via javascript, css and html. It is a self-contatined file.
 
 ## Known issues / quirks
 - Audio may require an initial input.
