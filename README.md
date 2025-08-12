@@ -1,4 +1,4 @@
-[Click Here to Play!](www.google.com)
+# [Click Here to Play!](https://www.google.com)
 
 # Moon Master (Parody Fan Game)
 
