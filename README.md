@@ -1,4 +1,4 @@
-# [Click Here to Play!](https://htmlpreview.github.io/?https://github.com/0hmyTVC15/moon-master-hd/blob/56b5f483ad93e2909ac3f84eff5756ceacdf4477/builds/ver%201.0.x/moon-master-1.4.2.html)
+# [Click Here to Play Moon Master!](https://htmlpreview.github.io/?https://github.com/0hmyTVC15/moon-master-hd/blob/56b5f483ad93e2909ac3f84eff5756ceacdf4477/builds/ver%201.0.x/moon-master-1.4.2.html)
 Work in Progress | Desktop / Keyboard Recommended
 
 # Moon Master HD: Beware the Gorgatron
