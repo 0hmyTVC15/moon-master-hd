@@ -1,5 +1,5 @@
 # [Click Here to Play!](https://htmlpreview.github.io/?https://github.com/0hmyTVC15/moon-master-hd/blob/56b5f483ad93e2909ac3f84eff5756ceacdf4477/builds/ver%201.0.x/moon-master-1.4.2.html)
-- Working Progress | Desktop / Keyboard Recommended
+Work in Progress | Desktop / Keyboard Recommended
 # Moon Master HD: Beware the Gorgatron
 
 A fast, silly, 4-bit-style browser game loosely inspired by the “Moon Master” gag from Aqua Teen. It’s a fan-made parody: simple shapes, crunchy SFX, and steadily escalating chaos. Survive waves, fight boss Gorgatron, and spend your score on power-ups to push deeper.
