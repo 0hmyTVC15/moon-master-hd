@@ -54,5 +54,5 @@ A fast, silly, 4-bit-style browser game loosely inspired by the â€œMoon Masterâ€
 - **Design & development:** u/OhmyTVC15
 - Special thanks to friends and r/AquaJail who gave feedback on difficulty, UI layout, and performance.
 
-## Legal
+## Disclaimer
 This is a **fan-made parody video game**. It is **not affiliated with Adult Swim, Aqua Teen Hunger Force, or any related rights holders.** All references are for parody and educational purposes only. This will never be sold, distribute or generate revenue of any kind as an official product in its current form.
