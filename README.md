@@ -1,5 +1,4 @@
-# [Click Here to Play!](https://www.google.com](https://htmlpreview.github.io/?https://github.com/0hmyTVC15/moon-master-hd/blob/9e3992a0c801e63c1e5c7d569a2cb8f41e292bca/builds/ver%201.0.x/moon-master-1.4.1.html)
-
+# [Click Here to Play!](https://htmlpreview.github.io/?https://github.com/0hmyTVC15/moon-master-hd/blob/9e3992a0c801e63c1e5c7d569a2cb8f41e292bca/builds/ver%201.0.x/moon-master-1.4.1.html)
 # Moon Master (Parody Fan Game)
 
 A fast, silly, 4-bit-style browser game loosely inspired by the “Moon Master” gag from Aqua Teen. It’s a fan-made parody: simple shapes, crunchy SFX, and steadily escalating chaos. Survive waves, fight boss Gorgatron, and spend your score on power-ups to push deeper.
