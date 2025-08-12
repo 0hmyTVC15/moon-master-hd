@@ -1,3 +1,5 @@
+[Click Here to Play!](www.google.com)
+
 # Moon Master (Parody Fan Game)
 
 A fast, silly, 4-bit-style browser game loosely inspired by the “Moon Master” gag from Aqua Teen. It’s a fan-made parody: simple shapes, crunchy SFX, and steadily escalating chaos. Survive waves, fight boss Gorgatron, and spend your score on power-ups to push deeper.
