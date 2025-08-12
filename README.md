@@ -19,34 +19,37 @@ A fast, silly, 4-bit-style browser game loosely inspired by the â€œMoon Masterâ€
 - **Title flair:** Projectiles orbit and bounce on the **title screen** for ambiance.
 - **Debug level select:** On the **title screen, press `L`** to open a basic level-select/debug menu.
 
-## Controls (current defaults)
-- **Move:** Arrow Keys or WASD  
-- **Shoot:** Space  
-- **Jump:** X (enabled in this build)  
-- **Pause:** P  
-- **Debug Level Select:** Press **L** on the title screen
+## Controls
+- **Move:** Arrow Keys  
+- **Shoot:** Space Bar / X
+- **Jump:** Up Arrow Key
+- **Level Select:** Press **L** on the title screen
 
 ## Gameplay notes
 - Colliding with enemies **resets your run** (arcade-style).  
-- Difficulty **ramps meaningfully after ~Level 25**.  
-- Levels are lightweight and repeatable; expect increasingly dense bullet patterns and tighter dodging. It is hard, but not impossible. It has been QC'ed, however it is meant to be comically frustrating and should feel like Cuphead or retro shoot-em ups.
+- Difficulty **ramps meaningfully after ~Level 25** as key will start moving.
+- Levels are lightweight and repeatable; expect increasingly dense bullet patterns and tighter dodging.
+> Tip: It is hard, but not impossible. It is meant to be comically frustrating and should feel like Cuphead or retro shoot-em ups.
 
 ## How to run / host
 - [Click this link for the most current build](https://htmlpreview.github.io/?https://github.com/0hmyTVC15/moon-master-hd/blob/56b5f483ad93e2909ac3f84eff5756ceacdf4477/builds/ver%201.0.x/moon-master-1.4.2.html)
 
 ## Known issues / quirks
 - Audio may require an initial input.
-- On some mobile browsers, touch input and on-screen buttons may overlap UI at small sizes. This is still being worked on.
+- On some mobile browsers, touch input and on-screen buttons may overlap UI at small sizes.
+- There may be too many enemies after level 30. Waiting for feedback before implimenting change.
 
 ## Roadmap / nice-to-haves
 - More SFX polish and mix pass  
 - Additional enemy patterns after New Game + modes. 
 - Optional accessibility toggles (color variants)  
 - Optimize save settings
+- Difficulty tweaking
+- QC / Feedback from r/AquaJail
 
 ## Credits
 - **Design & development:** u/OhmyTVC15
 - Special thanks to friends and r/AquaJail who gave feedback on difficulty, UI layout, and performance.
 
 ## Legal
-This is a **fan-made parody video game**. It is **not affiliated with Adult Swim, Aqua Teen Hunger Force, or any related rights holders.** All references are for parody and educational purposes only. This will never be sold, distribute or generate revenue of any kind as an official product in its current form. If anyone wants to revise or change the code, please do so (just give me a heads up).
+This is a **fan-made parody video game**. It is **not affiliated with Adult Swim, Aqua Teen Hunger Force, or any related rights holders.** All references are for parody and educational purposes only. This will never be sold, distribute or generate revenue of any kind as an official product in its current form.
