@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Moon Master — build 0.2.4</title>
+<style>
+  html,body{height:100%;margin:0;background:#000;color:#fff;display:grid;place-items:center;
+    font-family:ui-monospace,Menlo,Consolas,monospace}
+  #wrap{position:relative}
+  canvas{width:768px;height:576px;image-rendering:pixelated;border:4px solid #fff;border-radius:8px;
+    box-shadow:0 20px 60px rgba(0,0,0,.8)}
+  .bar{position:absolute;top:6px;right:8px;display:flex;gap:8px}
+  button{background:#111;border:1px solid #333;color:#ddd;padding:6px 10px;border-radius:6px;cursor:pointer}
+  #hint{position:absolute;left:8px;right:8px;bottom:6px;font-size:12px;opacity:.75;display:flex;justify-content:space-between}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" width="256" height="192"></canvas>
+  <div class="bar">
+    <button id="reset">Reset</button>
+    <button id="full">Fullscreen</button>
+  </div>
+  <div id="hint"><div>← → move • ↑ jump • X zap</div><div>Debug: press L</div></div>
+</div>
+<script>
+(() => {
+  const cvs = document.getElementById('c');
+  const ctx = cvs.getContext('2d', {alpha:false});
+  const W=cvs.width, H=cvs.height;
+  const GROUND_Y = H-20;
+  ctx.imageSmoothingEnabled = false;
+
+  const COL = { BG:'#000000', INK:'#ffffff', G1:'#00ff66', G2:'#ff00aa', G3:'#00e7ff', Y:'#ffff55' };
+
+  function fit(){
+    const scale = Math.max(1, Math.floor(Math.min(window.innerWidth/W, window.innerHeight/H)));
+    cvs.style.width = (W*scale)+'px';
+    cvs.style.height = (H*scale)+'px';
+  }
+  window.addEventListener('resize', fit); fit();
+
+  function getMousePos(evt){
+    const rect = cvs.getBoundingClientRect();
+    const sx = W / rect.width;
+    const sy = H / rect.height;
+    return { x: (evt.clientX - rect.left) * sx, y: (evt.clientY - rect.top) * sy };
+  }
+
+  const keys = new Set();
+  addEventListener('keydown', e => { keys.add(e.key); if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','x','X','Enter','l','L','y','Y','n','N','Escape',' '].includes(e.key)) e.preventDefault(); });
+  addEventListener('keyup', e => keys.delete(e.key));
+
+  // persistence: only HI is saved
+  let score = 0;
+  let hi = Number(localStorage.getItem('mm_hi')||'0');
+  function updateHi(){ if (score>hi){ hi=score; localStorage.setItem('mm_hi', String(hi)); } }
+
+  // animated background
+  const moonDots = Array.from({length:420}, () => ({
+    x:(Math.random()*W)|0, y:(Math.random()*H)|0, s:Math.random()<.85?1:2, phase:Math.random()*Math.PI*2
+  }));
+  function drawMoon(){
+    ctx.fillStyle = '#17171d'; ctx.fillRect(0,0,W,H);
+    for (const d of moonDots){
+      d.x -= 0.10; if (d.x < -2) d.x = W + 1;
+      d.phase += 0.02;
+      const t = (Math.sin(d.phase)+1)/2;
+      const shade = 24 + (t*24)|0;
+      ctx.fillStyle = `rgb(${shade},${shade+2},${shade+8})`;
+      ctx.fillRect(d.x|0, d.y|0, d.s, d.s);
+    }
+  }
+
+  // EFFECTS: temporary power-ups (10s)
+  const EFFECT_TIME = 600;
+  const effects = { boots:0, rapid:0, shield:0, jump:0, spread:0, slow:0 };
+  function active(id){ return effects[id] > 0; }
+  function tickEffects(){ for (const k in effects){ if (effects[k]>0) effects[k]--; } }
+
+  // HUD smaller & spaced
+  function hud(){
+    const BAR_H = 10;
+    ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(0,0,W,BAR_H);
+    ctx.fillStyle=COL.INK; ctx.font='7px monospace';
+    // left: SCORE
+    ctx.fillText(`SCORE ${score}`, 3, 8);
+    // center: LEVEL
+    const lvlText = `LVL ${level}/50`;
+    const tw = ctx.measureText(lvlText).width|0;
+    ctx.fillText(lvlText, (W>>1) - (tw>>1), 8);
+    // right: HI
+    const hiText = `HI ${hi}`;
+    ctx.fillText(hiText, W - 3 - (ctx.measureText(hiText).width|0), 8);
+
+    // second row of tiny badges on a new line (breathing room)
+    let x = 2, y = BAR_H; // start right below the main bar
+    // clear a thin strip for badges
+    ctx.fillStyle='rgba(0,0,0,.35)'; ctx.fillRect(0,BAR_H,W,8);
+    const drawBadge=(glyph)=>{
+      ctx.fillStyle=COL.G3; ctx.fillRect(x, BAR_H+1, 8, 6);
+      ctx.fillStyle=COL.BG; ctx.fillText(glyph, x+2, BAR_H+7);
+      x += 12;
+    };
+    if (active('boots'))  drawBadge('B');
+    if (active('jump'))   drawBadge('J');
+    if (active('rapid'))  drawBadge('R');
+    if (active('spread')) drawBadge('W');
+    if (active('slow'))   drawBadge('T');
+    if (active('shield')) drawBadge('S');
+  }
+
+  class Player{
+    constructor(){ this.x=16; this.y=GROUND_Y; this.vx=0; this.vy=0; this.face=1; this.onGround=true; this.cool=0; }
+    get speed(){ return 1.0 + (active('boots')?0.4:0); }
+    get delay(){ return active('rapid') ? 12 : 20; } // more spacing between bullets
+    get jumpPower(){ return 3.0 + (active('jump')?1.0:0); }
+    update(){
+      if (keys.has('ArrowLeft')) { this.vx = Math.max(this.vx-0.25, -this.speed); this.face=-1; }
+      if (keys.has('ArrowRight')){ this.vx = Math.min(this.vx+0.25,  this.speed); this.face=1; }
+      if (!keys.has('ArrowLeft') && !keys.has('ArrowRight')) this.vx *= .8;
+      const wantsJump = keys.has('ArrowUp') || keys.has(' ');
+      if (wantsJump && this.onGround){ this.vy = -this.jumpPower; this.onGround = false; }
+      this.vy += 0.25;
+      this.y += this.vy;
+      if (this.y >= GROUND_Y){ this.y = GROUND_Y; this.vy=0; this.onGround=true; }
+      this.x += this.vx;
+      this.x = Math.max(4, Math.min(W-12, this.x));
+      if ((keys.has('x')||keys.has('X')) && this.cool<=0){
+        fireShot(this.x+6*this.face, this.y-6, this.face);
+        this.cool = this.delay;
+      }
+      if (this.cool>0) this.cool--;
+    }
+    draw(){
+      const ox=this.x|0, oy=(this.y-16)|0, flip=this.face===1?1:-1, WB=8;
+      const P={ RED:'#f00', W:'#fff', BR:'#8b4513', Y:'#ffd400', G:'#00ff66', T:'#00c8c8', BL:'#e0e0e0' };
+      const r=(dx,dy,w,h,c)=>{ const x=flip===1?ox+dx:ox+(WB-dx-w); ctx.fillStyle=c; ctx.fillRect(x|0,(oy+dy)|0,w,h); };
+      r(-1,-1,13,2,P.RED); r(0,0,2,2,P.W); r(9,0,2,2,P.W); r(4,1,1,4,P.BR);
+      r(0,4,8,4,P.Y); r(2,6,4,2,P.G);
+      r(0,8,8,6,P.T); r(-4,10,4,2,P.T); r(-4,12,2,3,P.T); r(8,10,4,3,P.T);
+      r(0,12,2,9,P.T); r(6,12,2,9,P.T);
+      r(10,10,2,2,P.Y); r(12,11,8,1,P.BL);
+    }
+  }
+  class Shot{
+    constructor(x,y,d,vy=0){ this.x=x; this.y=y; this.vx=d*2.0; this.vy=vy; this.dead=false; }
+    update(){ this.x+=this.vx; this.y+=this.vy; if(this.x<0||this.x>W||this.y<0||this.y>H) this.dead=true; }
+    draw(){ ctx.fillStyle=COL.Y; ctx.fillRect(this.x|0, this.y|0, 3,1); }
+  }
+  function fireShot(x,y,dir){
+    const add = b=>shots.push(b);
+    add(new Shot(x,y,dir,0));
+    if (active('spread')){
+      add(new Shot(x,y,dir, -0.6));
+      add(new Shot(x,y,dir,  0.6));
+    }
+  }
+
+  class Enemy{
+    constructor(px,py){
+      let tries=0;
+      do{
+        this.x=40+Math.random()*(W-80);
+        this.y=40+Math.random()*(H-80);
+        tries++;
+      } while (tries<20 && Math.hypot((this.x-px),(this.y-py))<50);
+      const baseSp = 0.22 + Math.random()*0.20;
+      const slowMul = active('slow') ? 0.6 : 1.0; // Time Slow affects enemies too
+      this.vx=(Math.random()<.5?-1:1)*baseSp*slowMul;
+      this.vy=(Math.random()<.5?-1:1)*baseSp*slowMul;
+      this.dead=false;
+    }
+    update(){
+      // re-check slow each frame so effect applies dynamically
+      const slowMul = active('slow') ? 0.6 : 1.0;
+      this.x+=this.vx*slowMul; this.y+=this.vy*slowMul;
+      if(this.x<8||this.x>W-8) this.vx*=-1;
+      if(this.y<16||this.y>H-12) this.vy*=-1;
+    }
+    draw(){ ctx.fillStyle=COL.G2; ctx.fillRect((this.x-4)|0,(this.y-4)|0,8,8); }
+  }
+  class Hazard{
+    constructor(x,y,vx,vy){ this.x=x; this.y=y; this.vx=vx; this.vy=vy; this.dead=false; }
+    update(){ this.x+=this.vx; this.y+=this.vy; if(this.x<2||this.x>W-2) this.vx*=-1; if(this.y<2||this.y>H-12) this.vy*=-1; }
+    draw(){ ctx.fillStyle=COL.G2; ctx.fillRect((this.x-1)|0,(this.y-1)|0,2,2); }
+  }
+  class Gorg{ constructor(){ this.x=W-86; this.y=GROUND_Y; this.hp=3+Math.floor(level/10); this.dead=false; } update(){} draw(){ if(this.dead) return; ctx.fillStyle='#a41fcb'; ctx.fillRect(this.x|0,(this.y-30)|0,60,30); ctx.fillStyle='#1f57ff'; ctx.fillRect((this.x-16)|0,(this.y-10)|0,16,6); ctx.fillRect((this.x+60)|0,(this.y-10)|0,16,6); } }
+
+  function drawKey(x,y){ ctx.fillStyle=COL.Y; ctx.fillRect(x|0,y|0,6,6); ctx.fillStyle=COL.BG; ctx.fillRect((x+2)|0,(y+2)|0,2,2); ctx.fillStyle=COL.Y; ctx.fillRect((x+6)|0,(y+2)|0,10,2); ctx.fillRect((x+14)|0,y|0,2,2); ctx.fillRect((x+12)|0,(y+4)|0,2,2); }
+
+  let state='TITLE';
+  let level=1, MAX_LEVEL=50;
+  let player, shots=[], enemies=[], hazards=[], boss=null;
+  let goalX=W-26, goalY=GROUND_Y-10;
+  let hazardTimer=0, hazardInterval=115;
+  let msgTimer=0;
+
+  let selectedLevel=1;
+
+  const SHOP_LEVELS = new Set([5,10,15,20,25,30,35,40,45,49]);
+  let postShopState='PLAY';
+  let shopFlash=0, lastClickMsg='';
+  const shopItems = [
+    { id:'boots',  name:'Speed Boots', price:150, icon:'B', timed:true },
+    { id:'jump',   name:'Jump Boots',  price:150, icon:'J', timed:true },
+    { id:'rapid',  name:'Rapid Zap',   price:180, icon:'R', timed:true },
+    { id:'spread', name:'Spread Shot', price:220, icon:'W', timed:true },
+    { id:'slow',   name:'Time Slow',   price:220, icon:'T', timed:true }, // slows enemies & hazards
+    { id:'shield', name:'Shield',      price:300, icon:'S', timed:true },
+    { id:'erase',  name:'Enemy Eraser (-2)', price:250, icon:'-', timed:false } // instant: remove 2 enemies
+  ];
+
+  cvs.addEventListener('click', (e)=>{
+    const m = getMousePos(e);
+    if (state==='TITLE'){ state='PLAY'; startLevel(); return; }
+    if (state==='SHOP'){
+      const startY=50;
+      for (let i=0;i<shopItems.length;i++){
+        const y = startY + i*18;
+        if (m.y>=y-8 && m.y<=y+4){ activateItem(i); return; }
+      }
+      if (m.x>=20 && m.x<=120 && m.y>=H-30 && m.y<=H-16){ state = postShopState; startLevel(); return; }
+    }
+  });
+
+  function activateItem(i){
+    const it = shopItems[i];
+    if (score>=it.price){
+      score -= it.price;
+      if (it.timed){
+        effects[it.id] = EFFECT_TIME; // start/refresh 10s
+        lastClickMsg = `${it.name} activated for 10s.`;
+      } else {
+        // instant: remove up to 2 enemies
+        let removed=0;
+        enemies = enemies.filter(e => {
+          if (removed<2){ removed++; return false; }
+          return true;
+        });
+        lastClickMsg = removed>0 ? `Removed ${removed} enemies.` : `No enemies to remove.`;
+      }
+      shopFlash=16;
+    } else { lastClickMsg = `Not enough funds for ${it.name}.`; shopFlash=16; }
+  }
+
+  function drawTitle(){
+    ctx.fillStyle=COL.INK; ctx.font='bold 12px monospace'; ctx.fillText('MOON MASTER', 84, 56);
+    ctx.font='8px monospace';
+    ctx.fillStyle=COL.G1; ctx.fillText('Beware the Gorgotron', 68, 74);
+    ctx.fillStyle=COL.G3; ctx.fillText('Press Enter or Click to begin', 58, 90);
+    if (keys.has('Enter')) { state='PLAY'; startLevel(); }
+    if (keys.has('l')||keys.has('L')){ selectedLevel=level; state='LEVEL_SELECT'; }
+  }
+
+  function drawLevelSelect(){
+    ctx.fillStyle='rgba(0,0,0,.7)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle=COL.INK; ctx.font='bold 10px monospace'; ctx.fillText('LEVEL SELECT (DEBUG)', 54, 40);
+    ctx.font='8px monospace';
+    ctx.fillText('←/→ = ±1   ↑/↓ = ±10   Enter = Start   Esc = Back', 20, 58);
+    ctx.fillText('Selected: '+selectedLevel, 96, 76);
+    if (keys.has('ArrowRight')) selectedLevel=Math.min(MAX_LEVEL, selectedLevel+1);
+    if (keys.has('ArrowLeft'))  selectedLevel=Math.max(1, selectedLevel-1);
+    if (keys.has('ArrowUp'))    selectedLevel=Math.min(MAX_LEVEL, selectedLevel+10);
+    if (keys.has('ArrowDown'))  selectedLevel=Math.max(1, selectedLevel-10);
+    if (keys.has('Enter')){
+      level=selectedLevel;
+      const next = (level%10===0)?'BOSS':'PLAY';
+      if (SHOP_LEVELS.has(level)){ state='SHOP'; postShopState=next; startLevel(); } else { state=next; startLevel(); }
+    }
+    if (keys.has('Escape')) state='TITLE';
+  }
+
+  function enemyCountForLevel(lvl){
+    // 2 at start; +2 every 4 levels (1-4 => 2; 5-8 => 4; 9-12 => 6; ...)
+    const extra = Math.floor((lvl-1)/4)*2;
+    return Math.min(16, 2 + extra);
+  }
+
+  function startLevel(){
+    player=new Player(); shots=[]; enemies=[]; hazards=[]; boss=null;
+    goalX=W-26; goalY=GROUND_Y-10;
+    const ecount = enemyCountForLevel(level);
+    if (state==='PLAY'){ for(let i=0;i<ecount;i++) enemies.push(new Enemy(player.x, player.y)); }
+    if (state==='BOSS'){ boss=new Gorg(); }
+    const baseInterval = 115 - Math.floor((level-1)*1.3);
+    const slowBonus = active('slow')? 25 : 0;
+    hazardInterval = Math.max(45, baseInterval + slowBonus);
+    hazardTimer = hazardInterval;
+    msgTimer = 48;
+  }
+
+  function nextAfterClear(){
+    score+=100; updateHi();
+    level++;
+    if (level>MAX_LEVEL){ state='ENDING'; return; }
+    const next = (level%10===0)?'BOSS':'PLAY';
+    if (SHOP_LEVELS.has(level)){ state='SHOP'; postShopState=next; } else { state=next; }
+    startLevel();
+  }
+
+  function nextAfterBoss(){
+    score+=300; updateHi();
+    level++;
+    if (level>MAX_LEVEL){ state='ENDING'; return; }
+    const next = (level%10===0)?'BOSS':'PLAY';
+    if (SHOP_LEVELS.has(level)){ state='SHOP'; postShopState=next; } else { state=next; }
+    startLevel();
+  }
+
+  function onDeath(from){
+    if (active('shield')){ effects.shield = 0; state=from; startLevel(); return; }
+    // you lose: score goes to zero, HI saved
+    updateHi();
+    score = 0;
+    state='CONTINUE'; resumeState=from;
+  }
+  let resumeState='PLAY';
+
+  function drawContinue(){
+    ctx.fillStyle='rgba(0,0,0,.7)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle=COL.INK; ctx.font='bold 10px monospace'; ctx.fillText('YOU WERE TERMINATED', 60, 70);
+    ctx.font='8px monospace'; ctx.fillText(`Continue at Level ${level}?  (Y / N)`, 70, 88);
+    if (keys.has('y')||keys.has('Y')||keys.has('Enter')){ state=resumeState; startLevel(); }
+    if (keys.has('n')||keys.has('N')||keys.has('Escape')){ state='TITLE'; }
+  }
+
+  // shop (requested format)
+  function drawShop(){
+      ctx.fillStyle = COL.INK; ctx.font = 'bold 9px monospace'; ctx.fillText('UNBELIEVABLE', 18, 24);
+      ctx.font = '8px monospace';
+      ctx.fillStyle = COL.G3; ctx.fillText('What you now need is our free warrior kit', 16, 36);
+
+      const startY = 50;
+      shopItems.forEach((it, idx)=>{
+        const y = startY + idx*18;
+        if (shopFlash>0) ctx.fillStyle = (shopFlash%2?COL.Y:COL.INK); else ctx.fillStyle=COL.INK;
+        ctx.fillText(`${it.name}`, 16, y);
+        ctx.fillStyle = COL.G2; ctx.fillText(`$${it.price}`, 170, y);
+      });
+      if (shopFlash>0) shopFlash--;
+
+      ctx.fillStyle = COL.G2; ctx.fillRect(20, H-30, 100, 14);
+      ctx.fillStyle = COL.BG; ctx.fillText('CONTINUE →', 40, H-19);
+
+      ctx.fillStyle = COL.G1; ctx.fillText(lastClickMsg || 'All sales are non-refundable.', 12, H-6);
+
+      if (keys.has('Enter')) { state=postShopState; startLevel(); }
+  }
+
+  function drawPlay(){
+    if (--hazardTimer<=0){ spawnHazard(false); hazardTimer = hazardInterval; }
+    player.update();
+    enemies.forEach(e=>e.update());
+    hazards.forEach(h=>h.update());
+    tickEffects();
+
+    for (const e of enemies){
+      if (Math.abs(player.x-e.x)<8 && Math.abs(player.y-e.y)<10) { onDeath('PLAY'); return; }
+    }
+    for (const h of hazards){
+      if (Math.abs(player.x-h.x)<5 && Math.abs(player.y-h.y)<6) { onDeath('PLAY'); return; }
+    }
+    shots.forEach(s=>{
+      s.update();
+      enemies.forEach(e=>{ if (!e.dead && Math.abs(s.x-e.x)<6 && Math.abs(s.y-e.y)<6){ e.dead=true; s.dead=true; score+=10; updateHi(); } });
+      hazards.forEach(h=>{ if (!h.dead && Math.abs(s.x-h.x)<3 && Math.abs(s.y-h.y)<3){ h.dead=true; s.dead=true; } });
+    });
+    enemies = enemies.filter(e=>!e.dead);
+    shots = shots.filter(s=>!s.dead);
+    hazards = hazards.filter(h=>!h.dead);
+
+    if (Math.abs(player.x - (goalX+8))<10 && Math.abs(player.y - (goalY+4))<12){ nextAfterClear(); return; }
+
+    drawKey(goalX, goalY);
+    enemies.forEach(e=>e.draw());
+    hazards.forEach(h=>h.draw());
+    shots.forEach(s=>s.draw());
+    player.draw();
+    if (msgTimer>0){ msgTimer--; ctx.fillStyle=COL.INK; ctx.fillText('GET THE GOLD KEY • X to zap • ↑ to jump', 50, 20); }
+  }
+
+  function drawBoss(){
+    if (--hazardTimer<=0){ spawnHazard(true); hazardTimer = Math.max(55, hazardInterval+35); }
+    player.update();
+    hazards.forEach(h=>h.update());
+    tickEffects();
+    shots.forEach(s=>{
+      s.update();
+      if (boss && !boss.dead && s.x>boss.x && s.x<boss.x+60 && s.y>boss.y-30 && s.y<boss.y){ boss.hp--; s.dead=true; if (boss.hp<=0){ boss.dead=true; msgTimer=60; } }
+      hazards.forEach(h=>{ if (!h.dead && Math.abs(s.x-h.x)<3 && Math.abs(s.y-h.y)<3){ h.dead=true; s.dead=true; } });
+    });
+    for (const h of hazards){
+      if (Math.abs(player.x-h.x)<5 && Math.abs(player.y-h.y)<6){ onDeath('BOSS'); return; }
+    }
+    shots = shots.filter(s=>!s.dead);
+    hazards = hazards.filter(h=>!h.dead);
+    if (boss && boss.dead){
+      ctx.fillStyle=COL.Y; ctx.fillText('BOSS DEFEATED!', 100, 40);
+      if (msgTimer--<=0){ nextAfterBoss(); return; }
+    }
+    if (boss) boss.draw();
+    hazards.forEach(h=>h.draw());
+    shots.forEach(s=>s.draw());
+    player.draw();
+    ctx.fillStyle=COL.INK; ctx.fillText('BEWARE THE GORGOTRON', 70, 20);
+  }
+
+  function spawnHazard(slowBoss){
+    const minDist = 60;
+    let x,y,tries=0;
+    do{
+      const side = (Math.random()*4)|0;
+      if (side===0){ x=0; y=Math.random()*(H-12); }
+      if (side===1){ x=W-1; y=Math.random()*(H-12); }
+      if (side===2){ x=Math.random()*W; y=0; }
+      if (side===3){ x=Math.random()*W; y=H-12; }
+      tries++;
+    } while (tries<30 && Math.hypot((player.x-x),(player.y-y)) < minDist);
+
+    let base = (slowBoss?0.52:0.58) + 0.022*(level-1);
+    if (active('slow')) base *= 0.6;
+    const dx = player.x - x, dy = player.y - y, L = Math.max(1, Math.hypot(dx,dy));
+    hazards.push(new Hazard(x,y, dx/L*base, dy/L*base));
+  }
+
+  function drawEnding(){
+    ctx.fillStyle=COL.INK; ctx.font='bold 10px monospace'; ctx.fillText('YOU ARE THE MOON MASTER', 48, 70);
+    ctx.font='8px monospace'; ctx.fillText('Press Reset to play again.', 80, 90);
+  }
+
+  function loop(){
+    requestAnimationFrame(loop);
+    drawMoon();
+    if (state==='TITLE') { drawTitle(); hud(); return; }
+    if (state==='LEVEL_SELECT') { drawLevelSelect(); hud(); return; }
+    if (state==='SHOP') { drawShop(); hud(); return; }
+    if (state==='CONTINUE') { drawContinue(); hud(); return; }
+    if (state==='PLAY') { drawPlay(); hud(); return; }
+    if (state==='BOSS') { drawBoss(); hud(); return; }
+    if (state==='ENDING') { drawEnding(); hud(); return; }
+  }
+
+  document.getElementById('reset').onclick=()=>{ updateHi(); score=0; state='TITLE'; level=1; for (const k in effects) effects[k]=0; startLevel(); };
+  document.getElementById('full').onclick=()=>{ if (document.fullscreenElement) document.exitFullscreen(); else cvs.requestFullscreen().catch(()=>{}); };
+
+  // init
+  state='TITLE'; startLevel(); loop();
+})();
+</script>
+</body>
+</html>

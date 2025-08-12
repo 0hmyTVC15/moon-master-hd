@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Moon Master — fan spoof (web)</title>
+  <style>
+    :root {
+      --bg: #000;
+      --fg: #ffffff;
+      --accent: #00ff66; /* neon green */
+      --accent2: #ff00aa; /* magenta */
+      --accent3: #00e7ff; /* cyan */
+      --accent4: #ffff55; /* yellow */
+    }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      display: grid;
+      place-items: center;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    #container { position: relative; }
+    canvas {
+      width: 768px; /* will be resized in JS for pixel-perfect scaling */
+      height: 576px;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #000;
+      border: 4px solid var(--fg);
+      box-shadow: 0 0 0 8px rgba(255,255,255,0.08), 0 20px 60px rgba(0,0,0,0.8);
+      border-radius: 8px;
+    }
+    #hint {
+      position: absolute;
+      left: 8px; right: 8px; bottom: 6px;
+      font-size: 12px; opacity: .75;
+      display: flex; justify-content: space-between; gap: 12px; align-items: center;
+      pointer-events: none;
+    }
+    .btnbar { position: absolute; top: 8px; right: 8px; display: flex; gap: 8px; }
+    .btn {
+      pointer-events: auto;
+      background: #111;
+      border: 1px solid #333;
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 6px;
+      color: #ddd;
+      cursor: pointer;
+    }
+    .btn:hover { filter: brightness(1.2); }
+    a { color: var(--accent3); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <canvas id="game" width="256" height="192"></canvas>
+    <div class="btnbar">
+      <button class="btn" id="btnMute" title="M">🔇 Mute</button>
+      <button class="btn" id="btnReset" title="R">↻ Reset</button>
+      <button class="btn" id="btnFull" title="F">⛶ Fullscreen</button>
+    </div>
+    <div id="hint">
+      <div>Controls: ← ↑ → ↓ move • X zap </div>
+      <div><small>Not affiliated with Adult Swim. (r/AquaJail)</small></div>
+    </div>
+  </div>
+  <script>
+  (()=>{
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const W = canvas.width, H = canvas.height;
+
+    // --- Palette (keep it 4-5 colors for an Atari-ish vibe)
+    const COL = {
+      BG: '#000000',
+      INK: '#ffffff',
+      G1: '#00ff66',
+      G2: '#ff00aa',
+      G3: '#00e7ff',
+      Y: '#ffff55'
+    };
+
+    // --- Resize for integer scaling
+    function fit() {
+      const scale = Math.max(1, Math.floor(Math.min(window.innerWidth / W, window.innerHeight / H)));
+      canvas.style.width = (W * scale) + 'px';
+      canvas.style.height = (H * scale) + 'px';
+    }
+    window.addEventListener('resize', fit);
+    fit();
+
+    // --- Inputs
+    const keys = new Set();
+    window.addEventListener('keydown', (e)=>{
+      if (['ArrowLeft','ArrowRight','ArrowUp','Space','x','X','Enter','m','M','f','F','r','R'].includes(e.key)) e.preventDefault();
+      keys.add(e.key);
+    });
+    window.addEventListener('keyup', (e)=> keys.delete(e.key));
+
+    // --- Tiny audio beeper
+    let audioOn = false; // opt-in on first user gesture
+    let ac = null;
+    function ensureAudio() {
+      if (!audioOn) {
+        ac = new (window.AudioContext || window.webkitAudioContext)();
+        audioOn = true;
+        document.getElementById('btnMute').textContent = '🔊 Sound';
+      }
+    }
+    function beep(freq=440, dur=0.08, type='square', vol=0.15) {
+      if (!audioOn || !ac) return;
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      o.type = type; o.frequency.value = freq;
+      g.gain.value = vol; o.connect(g).connect(ac.destination);
+      o.start();
+      o.stop(ac.currentTime + dur);
+    }
+
+    // --- UI buttons
+    document.getElementById('btnMute').onclick = ()=>{
+      if (!audioOn) { ensureAudio(); return; }
+      audioOn = false; try { ac.close(); } catch {}
+      ac = null; document.getElementById('btnMute').textContent = '🔇 Mute';
+    };
+    document.getElementById('btnReset').onclick = ()=>{ ensureAudio(); resetGame(); };
+    document.getElementById('btnFull').onclick = ()=>{
+      if (document.fullscreenElement) document.exitFullscreen(); else canvas.requestFullscreen().catch(()=>{});
+    };
+
+    // --- Helpers
+    const rand = (a,b)=> a + Math.random()*(b-a);
+    const clamp = (v,a,b)=> Math.max(a, Math.min(b, v));
+
+    // --- Moon speckle background (light gray with small craters / dots)
+    const MOON = { BASE:'#1c1c22', D1:'#24262e', D2:'#2c2f38' };
+    const moonDots = new Array(420).fill(0).map(()=>({ 
+      x: (Math.random()*W)|0, 
+      y: (Math.random()*H)|0, 
+      s: Math.random()<0.75?1:2, 
+      c: Math.random()<0.5?MOON.D1:MOON.D2 
+    }));
+    function drawMoonBG() {
+      ctx.fillStyle = MOON.BASE; ctx.fillRect(0,0,W,H);
+      for (const d of moonDots) { ctx.fillStyle = d.c; ctx.fillRect(d.x, d.y, d.s, d.s); }
+    }
+
+    // --- Key + collision helpers
+    function aabb(ax,ay,aw,ah,bx,by,bw,bh){
+      return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+    }
+    function drawGoldKey(x, y, s=1){
+      // simple pixel key ~18x8
+      ctx.fillStyle = COL.Y;
+      // ring
+      ctx.fillRect((x)|0, (y)|0, 6*s, 6*s);
+      // hole
+      ctx.fillStyle = COL.BG;
+      ctx.fillRect((x+2*s)|0, (y+2*s)|0, 2*s, 2*s);
+      // shaft
+      ctx.fillStyle = COL.Y;
+      ctx.fillRect((x+6*s)|0, (y+2*s)|0, 10*s, 2*s);
+      // teeth
+      ctx.fillRect((x+14*s)|0, (y)|0, 2*s, 2*s);
+      ctx.fillRect((x+12*s)|0, (y+4*s)|0, 2*s, 2*s);
+    }
+
+    // --- Simple physics & entities
+    const GROUND_Y = H - 24;
+    const GRAV = 0.25;
+
+    class Player {
+      constructor(){ this.x=16; this.y=GROUND_Y-12; this.vx=0; this.vy=0; this.onGround=false; this.facing=1; this.cool=0; this.alive=true; }
+      update(){
+        const left = keys.has('ArrowLeft');
+        const right = keys.has('ArrowRight');
+        const jump = keys.has('ArrowUp');
+        const shoot = keys.has('x') || keys.has('X');
+
+        // movement
+        if (left) { this.vx = Math.max(this.vx-0.25, -1.2); this.facing=-1; }
+        if (right){ this.vx = Math.min(this.vx+0.25,  1.2); this.facing=1; }
+        if (!left && !right) this.vx *= 0.8;
+
+        // jump (super generous)
+        if (jump && this.onGround) { this.vy = -3.2; this.onGround=false; beep(220,0.06,'square',0.12); }
+
+        // shoot (one-shot laser)
+        if (shoot && this.cool<=0) {
+          shots.push(new Shot(this.x+6*this.facing, this.y-4, this.facing));
+          this.cool = 10; beep(880,0.05,'square',0.08);
+        }
+        if (this.cool>0) this.cool--;
+
+        this.vy += GRAV;
+        this.x += this.vx; this.y += this.vy;
+
+        // ground collision
+        if (this.y >= GROUND_Y-10) { this.y = GROUND_Y-10; this.vy=0; this.onGround = true; }
+        // walls
+        if (this.x < 4) { this.x = 4; this.vx=0; }
+        if (this.x > W-12) { this.x = W-12; this.vx=0; }
+      }
+      draw(){
+        const ox = this.x|0;
+        const oy = (this.y - 16)|0;      // sprite top
+        const flip = this.facing === 1 ? 1 : -1;
+        const W_BODY = 8;
+
+        const P = {
+          RED:'#ff0000', WHITE:'#ffffff', BROWN:'#8b4513',
+          YELL:'#ffd400', GREEN:'#00ff66', TEAL:'#00c8c8', BLADE:'#e0e0e0'
+        };
+
+        const r = (dx, dy, w, h, col) => {
+          const x = flip === 1 ? ox + dx : ox + (W_BODY - dx - w);
+          ctx.fillStyle = col;
+          ctx.fillRect(x|0, (oy + dy)|0, w, h);
+        };
+
+        // --- BANDANA + EYES (above neck)
+        r(-1, -1, 13, 2, P.RED);     // bandana
+        r( 0,  0,  2, 2, P.WHITE);   // left eye
+        r( 9,  0,  2, 2, P.WHITE);   // right eye
+        r( 4,  1,  1, 4, P.BROWN);   // nose/neck post
+
+        // --- HEAD + MOUTH
+        r( 0,  4,  8, 4, P.YELL);    // head block
+        r( 2,  6,  4, 2, P.GREEN);   // mouth
+
+        // --- TORSO & LIMBS
+        r( 0,  8,  8, 6, P.TEAL);    // torso
+        r(-4, 10,  4, 2, P.TEAL);    // left arm upper
+        r(-4, 12,  2, 3, P.TEAL);    // left forearm
+        r( 8, 10,  4, 3, P.TEAL);    // right arm
+        r( 0, 12,  2, 9, P.TEAL);    // left leg
+        r( 6, 12,  2, 9, P.TEAL);    // right leg
+
+        // --- SWORD
+        r(10,10,  2, 2, P.YELL);     // guard
+        r(12,11,  8, 1, P.BLADE);    // blade
+      }
+    }
+
+    class Shot {
+      constructor(x,y,dir){ this.x=x; this.y=y; this.vx=dir*2.2; this.dead=false; }
+      update(){ this.x += this.vx; if (this.x<0||this.x>W) this.dead=true; }
+      draw(){ ctx.fillStyle = COL.Y; ctx.fillRect(this.x|0, this.y|0, 3, 1); }
+    }
+
+    class Enemy { // slow roamers (top-down vibe)
+      constructor(x){ this.x=x; this.y=H - 34 - Math.random()*60; this.vx=rand(0.1,0.35)*(Math.random()<0.5?-1:1); this.vy=rand(0.05,0.2)*(Math.random()<0.5?-1:1); this.dead=false; }
+      update(){ this.x += this.vx; this.y += this.vy; if (this.x<10||this.x>W-10) this.vx*=-1; if (this.y<14||this.y>H-14) this.vy*=-1; }
+      draw(){ ctx.fillStyle = COL.G2; ctx.fillRect((this.x-4)|0, (this.y-4)|0, 8, 8); }
+    }
+
+    // --- Enemy projectiles ("hazards") that increase with level
+    class Hazard {
+      constructor(x,y,vx,vy){
+        this.x=x; this.y=y; this.vx=vx; this.vy=vy; this.dead=false;
+      }
+      update(){
+        this.x += this.vx; this.y += this.vy;
+        // bounce lightly on walls to feel chaotic
+        if (this.x<2||this.x>W-2) this.vx*=-1;
+        if (this.y<2||this.y>H-12) this.vy*=-1;
+      }
+      draw(){
+        ctx.fillStyle = COL.G2; // magenta-ish
+        ctx.fillRect((this.x-1)|0, (this.y-1)|0, 2, 2);
+      }
+    }
+
+    class Gorgotron {
+      constructor(hp){
+        this.x=W-80; this.y=GROUND_Y-30;
+        this.hp = hp||3; this.dead=false; this.tick=0;
+      }
+      update(){ this.tick++; if (this.tick%120===0) beep(110,0.1,'square',0.2); }
+      hit(){ if (!this.dead) { this.hp--; if (this.hp<=0) { this.dead=true; for (let i=0;i<10;i++) particles.push(new Particle(this.x+rand(0,60), this.y+rand(0,30))); beep(60,0.25,'sawtooth',0.2);} } }
+      draw(){
+        if (this.dead) return;
+        const ox = this.x|0;
+        const oy = (this.y - 40)|0;   // top of boss; keeps feet on this.y
+        const P = { PURP:'#a41fcb', BLUE:'#1f57ff', WHITE:'#e9e9e9', MOUTH:'#202020' };
+        const r = (dx,dy,w,h,col)=>{ ctx.fillStyle=col; ctx.fillRect((ox+dx)|0,(oy+dy)|0,w,h); };
+        // crown spikes
+        r( 10,  2, 10,10, P.PURP);
+        r( 26,  0, 12,12, P.PURP);
+        r( 44,  2, 10,10, P.PURP);
+        // head
+        r(  2, 12, 60,22, P.PURP);
+        r(-10,18, 12,12, P.PURP);
+        r( 62,18, 12,12, P.PURP);
+        // brows / nubs
+        r(-16,20, 16, 6, P.BLUE);
+        r( 60,20, 16, 6, P.BLUE);
+        r( 26,22,  8, 8, P.BLUE);
+        r( 38,22,  8, 8, P.BLUE);
+        // mouth + tooth
+        r( 12,28, 40, 6, P.MOUTH);
+        r( 16,24,  8, 8, P.WHITE);
+        // pelvis
+        r( 28,34,  8, 8, P.PURP);
+        // big feet
+        r(-24,40, 40, 8, P.BLUE);
+        r(-24,36, 28, 6, P.BLUE);
+        r( 44,40, 40, 8, P.BLUE);
+        r( 56,36, 28, 6, P.BLUE);
+      }
+    }
+
+    class Particle { constructor(x,y){ this.x=x; this.y=y; this.vx=rand(-1,1); this.vy=rand(-1.5,-0.5); this.t=60; }
+      update(){ this.t--; this.x+=this.vx; this.y+=this.vy; this.vy+=0.05; }
+      draw(){ if (this.t<=0) return; ctx.fillStyle = COL.Y; ctx.fillRect(this.x|0, this.y|0, 1,1); }
+    }
+
+    let player, shots, enemies, hazards, boss, particles;
+
+    // --- Level / state machine
+    let state = 'TITLE';
+    const MAX_LEVEL = 50;
+let selectedLevel = 1;
+    let level = 1;
+    let goalX = W - 24;
+    let msgTimer = 0;
+
+    // hazard pacing
+    let hazardTimer = 0;
+    let hazardInterval = 120;
+
+    function hazardSpeedForLevel(lvl){
+      return 0.6 + 0.03 * (lvl-1); // gradually ramps
+    }
+    function hazardIntervalForLevel(lvl){
+      // shorter interval = more bullets. floor at 15 frames
+      return Math.max(15, 90 - (lvl-1)*2);
+    }
+    function initialHazardsForLevel(lvl){
+      return Math.min(12, Math.floor((lvl-1)/2)); // +1 every two levels up to 12
+    }
+
+    function spawnHazardAtEdge(){
+      // Spawn from a random edge, aimed roughly at the player
+      const side = (Math.random()*4)|0;
+      let x,y;
+      if (side===0){ x=0; y=rand(8,H-16); }
+      if (side===1){ x=W-1; y=rand(8,H-16); }
+      if (side===2){ x=rand(0,W); y=0; }
+      if (side===3){ x=rand(0,W); y=H-12; }
+      const speed = hazardSpeedForLevel(level);
+      // aim vector
+      const dx = player.x - x + rand(-10,10);
+      const dy = player.y - y + rand(-10,10);
+      const len = Math.max(0.0001, Math.hypot(dx,dy));
+      const vx = (dx/len) * speed;
+      const vy = (dy/len) * speed;
+      hazards.push(new Hazard(x,y,vx,vy));
+    }
+
+    function resetLevel() {
+      player = new Player();
+      shots = [];
+      const count = Math.min(8, 2 + Math.floor(Math.random()*level));
+      enemies = (state==='PLAY') ? new Array(count).fill(0).map(()=> new Enemy(30 + Math.random()*(W-60))) : [];
+      hazards = [];
+      // seed a few hazards to start; they accumulate as you survive
+      for (let i=0;i<initialHazardsForLevel(level);i++) spawnHazardAtEdge();
+      hazardInterval = hazardIntervalForLevel(level);
+      hazardTimer = hazardInterval;
+      boss = (state==='BOSS') ? new Gorgotron(2 + Math.floor(level/10)) : null;
+      particles = [];
+      msgTimer = 60;
+    }
+
+    function resetGame(){ level = 1; state='TITLE'; resetLevel(); }
+
+    function drawGround(){ /* bird's-eye view: no ground strip */ }
+
+    function drawUIBar(){
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0,0,W,12);
+      ctx.fillStyle = COL.INK; ctx.fillText(`LEVEL ${level}/${MAX_LEVEL}  SCORE ${Math.max(0,(level-1))*100}`, 4, 9);
+    }
+
+    // --- Main loop
+    ctx.imageSmoothingEnabled = false;
+    ctx.font = '8px monospace';
+
+    function loop(){
+      requestAnimationFrame(loop);
+      // Gameplay uses moon BG
+      drawMoonBG();
+
+      if (state==='TITLE') return drawTitle();
+      if (state==='LEVEL_SELECT') return drawLevelSelect();
+      if (state==='ENDING') return drawEnding();
+
+      if (state==='PLAY') {
+        drawGround();
+        drawUIBar();
+
+        // goal: GOLD KEY
+        drawGoldKey(goalX, GROUND_Y-14, 1);
+
+        // spawn hazards over time (more each level)
+        if (--hazardTimer <= 0){
+          const burst = 1 + Math.floor((level-1)/3); // +1 every 3 levels
+          for (let i=0;i<burst;i++) spawnHazardAtEdge();
+          hazardTimer = hazardInterval;
+        }
+
+        player.update();
+
+        
+        // win condition: touch the GOLD KEY
+        if (aabb(player.x-2, player.y-16, 12, 18, goalX, GROUND_Y-14, 18, 8)) {
+          level++;
+          if (level > MAX_LEVEL) { state='ENDING'; return; }
+          // boss every 10th level (10,20,30,40,50)
+          if (level % 10 === 0) { state='BOSS'; }
+          else { state='PLAY'; }
+          ensureAudio(); beep(520,0.08); beep(660,0.08);
+          resetLevel();
+          return;
+        }
+
+        // enemies
+        enemies.forEach(e=>e.update());
+        // player-enemy collision → reset to beginning
+        for (const e of enemies) {
+          if (!e.dead && Math.abs(player.x - e.x) < 8 && Math.abs(player.y - e.y) < 10) {
+            ensureAudio(); beep(140,0.18,'sawtooth',0.22); resetGame(); return; 
+          }
+        }
+
+        // hazards
+        hazards.forEach(h=>h.update());
+        for (const h of hazards){
+          if (!h.dead && Math.abs(player.x - h.x) < 5 && Math.abs(player.y - h.y) < 6){
+            ensureAudio(); beep(120,0.2,'sawtooth',0.25); resetGame(); return;
+          }
+        }
+
+        // shots
+        shots.forEach(s=>s.update());
+
+        // shot-enemy collisions
+        shots.forEach(s=>{
+          enemies.forEach(e=>{
+            if (!e.dead && Math.abs(s.x - e.x) < 6 && Math.abs(s.y - e.y) < 6) { e.dead=true; s.dead=true; particles.push(new Particle(e.x, e.y)); beep(300,0.06); }
+          });
+          // shot-hazard collisions (you can clear bullets)
+          hazards.forEach(h=>{
+            if (!h.dead && Math.abs(s.x - h.x) < 3 && Math.abs(s.y - h.y) < 3){ h.dead=true; s.dead=true; beep(500,0.04); }
+          });
+        });
+
+        enemies = enemies.filter(e=>!e.dead);
+        shots = shots.filter(s=>!s.dead);
+        hazards = hazards.filter(h=>!h.dead);
+
+        // draw
+        enemies.forEach(e=>e.draw());
+        hazards.forEach(h=>h.draw());
+        shots.forEach(s=>s.draw());
+        player.draw();
+
+        if (msgTimer>0) { msgTimer--; ctx.fillStyle = COL.INK; ctx.fillText('GET THE GOLD KEY • X to zap', 66, 20); }
+      }
+
+      if (state==='BOSS') {
+        drawGround();
+        drawUIBar();
+        ctx.fillStyle = COL.INK; ctx.fillText('BEWARE THE GORGOTRON', 62, 20);
+
+        // spawn some hazards even during boss (reduced)
+        if (--hazardTimer <= 0){
+          spawnHazardAtEdge();
+          hazardTimer = Math.max(20, hazardInterval + 30);
+        }
+
+        player.update();
+        if (!boss) boss = new Gorgotron(2 + Math.floor(level/10));
+        boss.update();
+
+        // hazards update / collide
+        hazards.forEach(h=>h.update());
+        for (const h of hazards){
+          if (!h.dead && Math.abs(player.x - h.x) < 5 && Math.abs(player.y - h.y) < 6){
+            ensureAudio(); beep(120,0.2,'sawtooth',0.25); resetGame(); return;
+          }
+        }
+
+        // shots
+        shots.forEach(s=>{
+          s.update();
+          if (!boss.dead && s.x>boss.x && s.x<boss.x+60 && s.y>boss.y && s.y<boss.y+30) { boss.hit(); s.dead=true; }
+          hazards.forEach(h=>{
+            if (!h.dead && Math.abs(s.x - h.x) < 3 && Math.abs(s.y - h.y) < 3){ h.dead=true; s.dead=true; beep(500,0.04); }
+          });
+        });
+        shots = shots.filter(s=>!s.dead);
+        hazards = hazards.filter(h=>!h.dead);
+
+        // draw
+        boss.draw();
+        hazards.forEach(h=>h.draw());
+        shots.forEach(s=>s.draw());
+        player.draw();
+        particles.forEach(p=>p.update());
+        particles.forEach(p=>p.draw());
+        particles = particles.filter(p=>p.t>0);
+
+        if (boss.dead) {
+          ctx.fillStyle = COL.Y; ctx.fillText('BOSS DEFEATED!', 100, 40);
+          if (msgTimer--<=0) {
+            level++;
+            if (level > MAX_LEVEL) { state='ENDING'; }
+            else { state='PLAY'; ensureAudio(); beep(840,0.08); }
+            resetLevel();
+          }
+        }
+      }
+    }
+
+    function drawTitle(){
+      drawGround();
+      ctx.fillStyle = COL.INK; ctx.font = 'bold 12px monospace'; ctx.fillText('MOON MASTER', 84, 50);
+      ctx.font = '8px monospace';
+      ctx.fillStyle = COL.G1; ctx.fillText('Beware the Gorgotron', 20, 68);
+      ctx.fillStyle = COL.G3; ctx.fillText('Press Enter or Click to Begin', 60, 86);
+      ctx.fillStyle = COL.INK; ctx.fillText('← → move  ↑ jump  X zap', 18, 104);
+      ctx.fillStyle = COL.G2; ctx.fillText('Ver. 0.1.x', 18, 122);
+      // attract-mode player + goal
+      drawGoldKey(W-32, GROUND_Y-14, 1);
+      const demo = new Player(); demo.x = 30; demo.y = GROUND_Y-10; demo.draw();
+
+      if (keys.has('Enter')) { ensureAudio(); state='PLAY'; resetLevel(); }
+      if (keys.has('l') || keys.has('L')) { selectedLevel = level || 1; state='LEVEL_SELECT'; }
+      // mouse click on canvas starts too
+      canvas.onclick = ()=>{ ensureAudio(); state='PLAY'; resetLevel(); canvas.onclick=null; };
+    }
+    function drawLevelSelect(){
+      // overlay panel
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle = COL.BG; ctx.fillRect(24, 36, W-48, H-72);
+      ctx.strokeStyle = COL.G3; ctx.strokeRect(24.5, 36.5, W-49, H-73);
+      ctx.fillStyle = COL.Y; ctx.font = '12px monospace'; ctx.fillText('DEBUG • LEVEL SELECT', 40, 60);
+      ctx.fillStyle = COL.FG; ctx.font = '8px monospace';
+      ctx.fillText('Use ← → (±1), ↑ ↓ (±10)', 40, 82);
+      ctx.fillText('ENTER: start   ESC: back', 40, 96);
+      ctx.fillText('Selected Level: ' + selectedLevel + ' / ' + MAX_LEVEL, 40, 120);
+      // simple progress bar
+      const barX=40, barY=132, barW=W-80, barH=8;
+      ctx.fillStyle = COL.G2; ctx.fillRect(barX, barY, barW, barH);
+      const pct = (selectedLevel-1)/Math.max(1,(MAX_LEVEL-1));
+      ctx.fillStyle = COL.Y; ctx.fillRect(barX, barY, Math.max(2, barW*pct|0), barH);
+      // input handling here to keep it self-contained
+      if (keys.has('ArrowRight')) selectedLevel = Math.min(MAX_LEVEL, selectedLevel+1);
+      if (keys.has('ArrowLeft'))  selectedLevel = Math.max(1, selectedLevel-1);
+      if (keys.has('ArrowUp'))    selectedLevel = Math.min(MAX_LEVEL, selectedLevel+10);
+      if (keys.has('ArrowDown'))  selectedLevel = Math.max(1, selectedLevel-10);
+      if (keys.has('Escape')) { state='TITLE'; return; }
+      if (keys.has('Enter')) {
+        ensureAudio();
+        level = selectedLevel;
+        resetLevel();
+        state = (level % 10 === 0) ? 'BOSS' : 'PLAY';
+        return;
+      }
+    }
+
+
+    function drawEnding(){
+      drawGround();
+      ctx.fillStyle = COL.INK; ctx.font = 'bold 10px monospace';
+      ctx.fillText('RAMPAGE KILLING SPREE!', 44, 48);
+      ctx.font = '8px monospace';
+      ctx.fillStyle = COL.G3; ctx.fillText('You have mastered Moon Master.', 80, 64);
+      ctx.fillStyle = COL.G2; ctx.fillText('YOU ARE THE MOON MASTER!', 44, 78);
+      ctx.fillStyle = COL.INK; ctx.fillText('Press R to restart.', 90, 96);
+      if (keys.has('r') || keys.has('R')) resetGame();
+    }
+
+    // Start anim
+    resetGame();
+    requestAnimationFrame(loop);
+
+    // Key-based quick actions (audio/full/etc.)
+    window.addEventListener('keydown', (e)=>{
+      if (e.key==='Enter') ensureAudio();
+      if (e.key==='M' || e.key==='m') {
+        if (!audioOn) ensureAudio(); else { audioOn=false; try{ac.close();}catch{}; ac=null; document.getElementById('btnMute').textContent='🔇 Mute'; }
+      }
+      if (e.key==='F' || e.key==='f') { if (document.fullscreenElement) document.exitFullscreen(); else canvas.requestFullscreen().catch(()=>{}); }
+      if (e.key==='R' || e.key==='r') { ensureAudio(); resetGame(); }
+    });
+  })();
+  </script>
+</body>
+</html>

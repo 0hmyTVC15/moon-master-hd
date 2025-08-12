@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Moon Master — fan spoof (web)</title>
+  <style>
+    :root {
+      --bg: #000;
+      --fg: #ffffff;
+      --accent: #00ff66; /* neon green */
+      --accent2: #ff00aa; /* magenta */
+      --accent3: #00e7ff; /* cyan */
+      --accent4: #ffff55; /* yellow */
+    }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      display: grid;
+      place-items: center;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    #container { position: relative; }
+    canvas {
+      width: 768px; /* will be resized in JS for pixel-perfect scaling */
+      height: 576px;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #000;
+      border: 4px solid var(--fg);
+      box-shadow: 0 0 0 8px rgba(255,255,255,0.08), 0 20px 60px rgba(0,0,0,0.8);
+      border-radius: 8px;
+    }
+    #hint {
+      position: absolute;
+      left: 8px; right: 8px; bottom: 6px;
+      font-size: 12px; opacity: .75;
+      display: flex; justify-content: space-between; gap: 12px; align-items: center;
+      pointer-events: none;
+    }
+    .btnbar { position: absolute; top: 8px; right: 8px; display: flex; gap: 8px; }
+    .btn {
+      pointer-events: auto;
+      background: #111;
+      border: 1px solid #333;
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 6px;
+      color: #ddd;
+      cursor: pointer;
+    }
+    .btn:hover { filter: brightness(1.2); }
+    a { color: var(--accent3); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <canvas id="game" width="256" height="192"></canvas>
+    <div class="btnbar">
+      <button class="btn" id="btnMute" title="M">🔇 Mute</button>
+      <button class="btn" id="btnReset" title="R">↻ Reset</button>
+      <button class="btn" id="btnFull" title="F">⛶ Fullscreen</button>
+    </div>
+    <div id="hint">
+      <div>Controls: ← → move • ↑ jump • X zap • Enter start • M mute</div>
+      <div><small>Not affiliated with Adult Swim. Parody/fan work.</small></div>
+    </div>
+  </div>
+  <script>
+  (()=>{
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const W = canvas.width, H = canvas.height;
+
+    // --- Palette (keep it 4-5 colors for an Atari-ish vibe)
+    const COL = {
+      BG: '#000000',
+      INK: '#ffffff',
+      G1: '#00ff66',
+      G2: '#ff00aa',
+      G3: '#00e7ff',
+      Y: '#ffff55'
+    };
+
+    // --- Resize for integer scaling
+    function fit() {
+      const scale = Math.max(1, Math.floor(Math.min(window.innerWidth / W, window.innerHeight / H)));
+      canvas.style.width = (W * scale) + 'px';
+      canvas.style.height = (H * scale) + 'px';
+    }
+    window.addEventListener('resize', fit);
+    fit();
+
+    // --- Inputs
+    const keys = new Set();
+    window.addEventListener('keydown', (e)=>{
+      if (['ArrowLeft','ArrowRight','ArrowUp','Space','x','X','Enter','m','M','f','F','r','R'].includes(e.key)) e.preventDefault();
+      keys.add(e.key);
+    });
+    window.addEventListener('keyup', (e)=> keys.delete(e.key));
+
+    // --- Tiny audio beeper
+    let audioOn = false; // opt-in on first user gesture
+    let ac = null;
+    function ensureAudio() {
+      if (!audioOn) {
+        ac = new (window.AudioContext || window.webkitAudioContext)();
+        audioOn = true;
+        document.getElementById('btnMute').textContent = '🔊 Sound';
+      }
+    }
+    function beep(freq=440, dur=0.08, type='square', vol=0.15) {
+      if (!audioOn || !ac) return;
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      o.type = type; o.frequency.value = freq;
+      g.gain.value = vol; o.connect(g).connect(ac.destination);
+      o.start();
+      o.stop(ac.currentTime + dur);
+    }
+
+    // --- UI buttons
+    document.getElementById('btnMute').onclick = ()=>{
+      if (!audioOn) { ensureAudio(); return; }
+      audioOn = false; try { ac.close(); } catch {}
+      ac = null; document.getElementById('btnMute').textContent = '🔇 Mute';
+    };
+    document.getElementById('btnReset').onclick = ()=>{ ensureAudio(); resetGame(); };
+    document.getElementById('btnFull').onclick = ()=>{
+      if (document.fullscreenElement) document.exitFullscreen(); else canvas.requestFullscreen().catch(()=>{});
+    };
+
+    // --- Helpers
+    const rand = (a,b)=> a + Math.random()*(b-a);
+
+    // --- Stars background
+    const stars = new Array(64).fill(0).map(()=>({x: Math.random()*W, y: Math.random()*H, z: Math.random()*1}));
+    function drawStars() {
+      ctx.fillStyle = COL.BG; ctx.fillRect(0,0,W,H);
+      for (const s of stars) {
+        s.x -= 0.1 + s.z*0.3; if (s.x < 0) { s.x += W; s.y = Math.random()*H; s.z = Math.random(); }
+        ctx.fillStyle = s.z>0.66?COL.G3:(s.z>0.33?COL.G2:COL.INK);
+        ctx.fillRect(s.x|0, s.y|0, 1, 1);
+      }
+    }
+
+    // --- Simple physics & entities
+    const GROUND_Y = H - 24;
+    const GRAV = 0.25;
+
+    class Player {
+      constructor(){ this.x=16; this.y=GROUND_Y-12; this.vx=0; this.vy=0; this.onGround=false; this.facing=1; this.cool=0; this.alive=true; }
+      update(){
+        const left = keys.has('ArrowLeft');
+        const right = keys.has('ArrowRight');
+        const jump = keys.has('ArrowUp');
+        const shoot = keys.has('x') || keys.has('X');
+
+        // movement
+        if (left) { this.vx = Math.max(this.vx-0.25, -1.2); this.facing=-1; }
+        if (right){ this.vx = Math.min(this.vx+0.25,  1.2); this.facing=1; }
+        if (!left && !right) this.vx *= 0.8;
+
+        // jump (super generous)
+        if (jump && this.onGround) { this.vy = -3.2; this.onGround=false; beep(220,0.06,'square',0.12); }
+
+        // shoot (one-shot laser)
+        if (shoot && this.cool<=0) {
+          shots.push(new Shot(this.x+6*this.facing, this.y-4, this.facing));
+          this.cool = 10; beep(880,0.05,'square',0.08);
+        }
+        if (this.cool>0) this.cool--;
+
+        this.vy += GRAV;
+        this.x += this.vx; this.y += this.vy;
+
+        // ground collision
+        if (this.y >= GROUND_Y-10) { this.y = GROUND_Y-10; this.vy=0; this.onGround = true; }
+        // walls
+        if (this.x < 4) { this.x = 4; this.vx=0; }
+        if (this.x > W-12) { this.x = W-12; this.vx=0; }
+      }
+      draw(){
+  const ox = this.x|0;
+  const oy = (this.y - 16)|0; // top of sprite
+  const flip = this.facing === 1 ? 1 : -1;
+  const W_BODY = 8;           // base body width used for mirroring
+
+  // helper to mirror around the 8px body
+  const r = (dx, dy, w, h, col) => {
+    const x = flip === 1 ? ox + dx : ox + (W_BODY - dx - w);
+    ctx.fillStyle = col;
+    ctx.fillRect(x|0, (oy + dy)|0, w, h);
+      };
+
+
+      // --- HEADBAND + EYES
+      r(-1, 0, 10, 2, COL.R);          // red headband
+      r( 1, 2,  2, 2, COL.G3);         // left eye (off-white)
+      r( 6, 2,  2, 2, COL.G3);         // right eye
+      r( 3, 2,  1, 4, COL.BR);         // brown post down to head
+
+      // --- HEAD (yellow) + MOUTH (green)
+      r( 0, 4,  8, 4, COL.Y);          // head block
+      r( 2, 5,  4, 2, COL.GRN);        // mouth
+
+      // --- TORSO & LIMBS (cyan)
+      r( 0, 8,  8, 6, COL.G1);         // torso
+      r(-4,10,  4, 2, COL.G1);         // left arm
+      r( 8,10,  4, 2, COL.G1);         // right arm
+      r( 0,14,  2, 2, COL.G1);         // left leg
+      r( 6,14,  2, 2, COL.G1);         // right leg
+
+      // --- SWORD (guard = yellow, blade = off-white)
+      r(10,10,  2, 2, COL.Y);          // guard ring
+      r(12,11,  8, 1, COL.G3);         // blade
+    }
+    }
+
+    class Shot {
+      constructor(x,y,dir){ this.x=x; this.y=y; this.vx=dir*2.2; this.dead=false; }
+      update(){ this.x += this.vx; if (this.x<0||this.x>W) this.dead=true; }
+      draw(){ ctx.fillStyle = COL.Y; ctx.fillRect(this.x|0, this.y|0, 3, 1); }
+    }
+
+    class Enemy { // extremely slow, mostly decorative
+      constructor(x){ this.x=x; this.y=GROUND_Y-10; this.vx=rand(0.1,0.25)*(Math.random()<0.5?-1:1); this.dead=false; }
+      update(){ this.x += this.vx; if (this.x<20||this.x>W-20) this.vx*=-1; }
+      draw(){ ctx.fillStyle = COL.G2; ctx.fillRect((this.x-4)|0, (this.y-8)|0, 8, 8); }
+    }
+
+    class Gorgotron {
+      constructor(){ this.x=W-80; this.y=GROUND_Y-30; this.hp=1; this.dead=false; this.tick=0; }
+      update(){ this.tick++; if (this.tick%120===0) beep(110,0.1,'square',0.2); }
+      hit(){ if (!this.dead) { this.hp--; if (this.hp<=0) { this.dead=true; for (let i=0;i<10;i++) particles.push(new Particle(this.x+rand(0,60), this.y+rand(0,30))); beep(60,0.25,'sawtooth',0.2);} } }
+      draw(){ if (this.dead) return; ctx.fillStyle = COL.G2; ctx.fillRect(this.x|0, this.y|0, 60, 30); ctx.fillStyle=COL.G3; ctx.fillRect((this.x+20)|0, (this.y+6)|0, 20, 6); }
+    }
+
+    class Particle { constructor(x,y){ this.x=x; this.y=y; this.vx=rand(-1,1); this.vy=rand(-1.5,-0.5); this.t=60; }
+      update(){ this.t--; this.x+=this.vx; this.y+=this.vy; this.vy+=0.05; }
+      draw(){ if (this.t<=0) return; ctx.fillStyle = COL.Y; ctx.fillRect(this.x|0, this.y|0, 1,1); }
+    }
+
+    let player, shots, enemies, boss, particles;
+
+    // --- Level / state machine
+    let state = 'TITLE';
+    let level = 1;
+    let goalX = W - 24;
+    let msgTimer = 0;
+
+    function resetLevel() {
+      player = new Player();
+      shots = [];
+      enemies = level<5 ? new Array(Math.max(0, level-1)).fill(0).map((_,i)=> new Enemy(80 + i*40)) : [];
+      boss = (state==='BOSS') ? new Gorgotron() : null;
+      particles = [];
+      msgTimer = 60;
+    }
+
+    function resetGame(){ level = 1; state='TITLE'; resetLevel(); }
+
+    // --- Title & Shop screens are drawn as UI-only
+
+    // Shop “scam” items
+    const shopItems = [
+      {name:'Foam Finger', price: '9.99'},
+      {name:'Gorgotron Repellent', price: '40.99'},
+      {name:'Official Helmet', price: '19.99'},
+      {name:'Certificate of Mastery', price: '14.99'},
+      {name:'Official Keychain', price: '29.99'},
+      {name:'Mystery Box', price: '999.99'},
+    ];
+    let shopFlash=0; let lastClickMsg='';
+    canvas.addEventListener('click', (e)=>{
+      const rect = canvas.getBoundingClientRect();
+      const scale = parseInt(canvas.style.width) / W || 1;
+      const mx = (e.clientX - rect.left) / scale;
+      const my = (e.clientY - rect.top) / scale;
+      if (state==='TITLE') { ensureAudio(); state='PLAY'; resetLevel(); return; }
+      if (state==='SHOP') {
+        // buttons
+        if (mx>20 && mx<120 && my>H-30 && my<H-16) { // Continue to Boss
+          state='BOSS'; resetLevel(); return;
+        }
+        // item rows
+        const startY = 50;
+        shopItems.forEach((it, idx)=>{
+          const y = startY + idx*18;
+          if (mx>16 && mx<W-16 && my>y-8 && my<y+8) {
+            ensureAudio(); beep(660,0.05,'square',0.15); shopFlash=6;
+            lastClickMsg = `Order placed: ${it.name}. We accept checks only.`;
+          }
+        });
+      }
+    });
+
+    function drawGround(){
+      ctx.fillStyle = COL.G2; ctx.fillRect(0, GROUND_Y, W, H-GROUND_Y);
+      // stripes for a simple lunar ground look
+      ctx.fillStyle = '#111'; for (let x=0; x<W; x+=8) ctx.fillRect(x, GROUND_Y, 4, 2);
+    }
+
+    function drawUIBar(){
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0,0,W,12);
+      ctx.fillStyle = COL.INK; ctx.fillText(`LEVEL ${level<=4?level:'BOSS'}  SCORE ${(level-1)*100}`, 4, 9);
+    }
+
+    // --- Main loop
+    ctx.imageSmoothingEnabled = false;
+    ctx.font = '8px monospace';
+
+    function loop(){
+      requestAnimationFrame(loop);
+      drawStars();
+
+      if (state==='TITLE') return drawTitle();
+      if (state==='SHOP') return drawShop();
+      if (state==='ENDING') return drawEnding();
+
+      if (state==='PLAY') {
+        drawGround();
+        drawUIBar();
+
+        // goal pillar (walk into it to win)
+        ctx.fillStyle = COL.G3; ctx.fillRect(goalX, GROUND_Y-18, 6, 18);
+        ctx.fillStyle = COL.Y; ctx.fillRect(goalX-4, GROUND_Y-18, 10, 3);
+
+        player.update();
+        if (player.x > goalX-1) { // trivially win
+          level++;
+          if (level<=4) { ensureAudio(); beep(520,0.08); beep(660,0.08); state='PLAY'; resetLevel(); }
+          else { // after level 4, go to SHOP scam screen
+            state='SHOP'; resetLevel();
+          }
+          return; 
+        }
+
+        // enemies (decorative)
+        enemies.forEach(e=>e.update());
+        // shots
+        shots.forEach(s=>s.update());
+
+        // shot-enemy collisions
+        shots.forEach(s=>{
+          enemies.forEach(e=>{
+            if (!e.dead && Math.abs(s.x - e.x) < 6 && Math.abs(s.y - e.y) < 6) { e.dead=true; s.dead=true; particles.push(new Particle(e.x, e.y)); beep(300,0.06); }
+          });
+        });
+        enemies = enemies.filter(e=>!e.dead);
+        shots = shots.filter(s=>!s.dead);
+
+        // draw
+        enemies.forEach(e=>e.draw());
+        shots.forEach(s=>s.draw());
+        player.draw();
+
+        if (msgTimer>0) { msgTimer--; ctx.fillStyle = COL.INK; ctx.fillText('WALK RIGHT TO WIN', 80, 20); }
+      }
+
+      if (state==='BOSS') {
+        drawGround();
+        drawUIBar();
+        ctx.fillStyle = COL.INK; ctx.fillText('FINAL BOSS: THE GORGOTRON', 62, 20);
+
+        player.update();
+        if (!boss) boss = new Gorgotron();
+        boss.update();
+
+        // shots
+        shots.forEach(s=>{
+          s.update();
+          if (!boss.dead && s.x>boss.x && s.x<boss.x+60 && s.y>boss.y && s.y<boss.y+30) { boss.hit(); s.dead=true; }
+        });
+        shots = shots.filter(s=>!s.dead);
+
+        // draw
+        boss.draw();
+        shots.forEach(s=>s.draw());
+        player.draw();
+        particles.forEach(p=>p.update());
+        particles.forEach(p=>p.draw());
+        particles = particles.filter(p=>p.t>0);
+
+        if (boss.dead) {
+          ctx.fillStyle = COL.Y; ctx.fillText('YOU WIN. YOU ARE THE MOON MASTER', 86, 40);
+          if (msgTimer--<=0) { state='ENDING'; }
+        }
+      }
+    }
+
+    function drawTitle(){
+      drawGround();
+      ctx.fillStyle = COL.INK; ctx.font = 'bold 12px monospace'; ctx.fillText('MOON MASTER', 84, 50);
+      ctx.font = '8px monospace';
+      ctx.fillStyle = COL.G1; ctx.fillText('Beware the Gorgotron', 20, 68);
+      ctx.fillStyle = COL.G3; ctx.fillText('Press Enter or Click to Begin', 60, 86);
+      ctx.fillStyle = COL.INK; ctx.fillText('← → move  ↑ jump  X zap', 18, 104);
+      ctx.fillStyle = COL.G2; ctx.fillText('Nobody makes it past level three.', 26, 122);
+      // attract-mode player
+      ctx.fillStyle = COL.G2; ctx.fillRect(W-28, GROUND_Y-18, 6, 18);
+      ctx.fillStyle = COL.Y; ctx.fillRect(W-32, GROUND_Y-18, 10, 3);
+      const demo = new Player(); demo.x = 30; demo.y = GROUND_Y-10; demo.draw();
+
+      if (keys.has('Enter')) { ensureAudio(); state='PLAY'; resetLevel(); }
+    }
+
+    function drawShop(){
+      drawGround();
+      ctx.fillStyle = COL.INK; ctx.font = 'bold 9px monospace'; ctx.fillText('UNBELIEVABLE', 18, 24);
+      ctx.font = '8px monospace';
+      ctx.fillStyle = COL.G3; ctx.fillText('What you now need is our free warrior kit', 16, 36);
+
+      // item list
+      const startY = 50;
+      shopItems.forEach((it, idx)=>{
+        const y = startY + idx*18;
+        if (shopFlash>0) ctx.fillStyle = (shopFlash%2?COL.Y:COL.INK); else ctx.fillStyle=COL.INK;
+        ctx.fillText(`${it.name}`, 16, y);
+        ctx.fillStyle = COL.G2; ctx.fillText(`$${it.price}`, 170, y);
+      });
+      if (shopFlash>0) shopFlash--;
+
+      // continue button
+      ctx.fillStyle = COL.G2; ctx.fillRect(20, H-30, 100, 14);
+      ctx.fillStyle = COL.BG; ctx.fillText('CONTINUE →', 40, H-19);
+
+      // bottom message
+      ctx.fillStyle = COL.G1; ctx.fillText(lastClickMsg || 'All sales are non-refundable.', 12, H-6);
+
+      if (keys.has('Enter')) { state='BOSS'; resetLevel(); }
+    }
+
+    function drawEnding(){
+      drawGround();
+      ctx.fillStyle = COL.INK; ctx.font = 'bold 10px monospace';
+      ctx.fillText('RAMPAGE KILLING SPREE!', 44, 48);
+      ctx.font = '8px monospace';
+      ctx.fillStyle = COL.G3; ctx.fillText('You have mastered Moon Master', 96, 64);
+      ctx.fillStyle = COL.G2; ctx.fillText('YOU ARE THE MOON MASTER!', 20, 78);
+      ctx.fillStyle = COL.INK; ctx.fillText('Thank you for saving our craps', 62, 96);
+      if (keys.has('r') || keys.has('R')) resetGame();
+    }
+
+    // Start anim
+    resetGame();
+    requestAnimationFrame(loop);
+
+    // Key-based quick actions (audio/full/etc.)
+    window.addEventListener('keydown', (e)=>{
+      if (e.key==='Enter') ensureAudio();
+      if (e.key==='M' || e.key==='m') {
+        if (!audioOn) ensureAudio(); else { audioOn=false; try{ac.close();}catch{}; ac=null; document.getElementById('btnMute').textContent='🔇 Mute'; }
+      }
+      if (e.key==='F' || e.key==='f') { if (document.fullscreenElement) document.exitFullscreen(); else canvas.requestFullscreen().catch(()=>{}); }
+      if (e.key==='R' || e.key==='r') { ensureAudio(); resetGame(); }
+    });
+  })();
+  </script>
+</body>
+</html>
